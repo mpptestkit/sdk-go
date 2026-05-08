@@ -1,0 +1,471 @@
+package mpp
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const serverRecipient = "ServerPubkey1111111111111111111111111111"
+
+// buildMppServer creates a test MppServer using the serverRecipient address and
+// a mock RPC server that never needs to be called for 402 paths.
+func buildMppServer(t *testing.T, extraConfig *TestServerConfig) *MppServer {
+	t.Helper()
+	cfg := &TestServerConfig{
+		Network:          NetworkDevnet,
+		RecipientAddress: serverRecipient,
+	}
+	if extraConfig != nil {
+		if extraConfig.Network != "" {
+			cfg.Network = extraConfig.Network
+		}
+		if extraConfig.RecipientAddress != "" {
+			cfg.RecipientAddress = extraConfig.RecipientAddress
+		}
+		if extraConfig.RPCURL != "" {
+			cfg.RPCURL = extraConfig.RPCURL
+		}
+	}
+	srv, err := CreateTestServer(cfg)
+	if err != nil {
+		t.Fatalf("CreateTestServer: %v", err)
+	}
+	return srv
+}
+
+// makeTxRPCServer starts an httptest.Server that responds to getTransaction
+// with the provided raw transaction fixture JSON.
+func makeTxRPCServer(txFixture interface{}) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req rpcRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+
+		if req.Method == "getTransaction" {
+			resp := map[string]interface{}{
+				"jsonrpc": "2.0",
+				"id":      1,
+				"result":  txFixture,
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"error":   map[string]interface{}{"code": -32601, "message": "method not found"},
+		})
+	}))
+}
+
+// validTx builds a transaction fixture that has the given recipient address
+// and received the given lamports.
+func validTx(recipient string, receivedLamports float64, failed bool) map[string]interface{} {
+	var txErr interface{} = nil
+	if failed {
+		txErr = map[string]interface{}{"InstructionError": []interface{}{0, "InsufficientFunds"}}
+	}
+	return map[string]interface{}{
+		"meta": map[string]interface{}{
+			"err":         txErr,
+			"preBalances": []interface{}{float64(1_000_000_000), float64(0)},
+			"postBalances": []interface{}{
+				float64(1_000_000_000) - receivedLamports - 5000,
+				receivedLamports,
+			},
+		},
+		"transaction": map[string]interface{}{
+			"message": map[string]interface{}{
+				"accountKeys": []interface{}{
+					map[string]interface{}{"pubkey": "ClientPubkey1111111111111111111111111111"},
+					map[string]interface{}{"pubkey": recipient},
+				},
+			},
+		},
+	}
+}
+
+// serveCharge runs an HTTP round-trip: the given HandlerFunc is used as the
+// application handler; it is wrapped by the MPP Charge middleware and served
+// via httptest. The test request is built from method/path/headers.
+func serveCharge(
+	t *testing.T,
+	mppSrv *MppServer,
+	amount string,
+	reqHeaders map[string]string,
+) *http.Response {
+	t.Helper()
+	nextCalled := false
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
+	wrapped := mppSrv.Charge(ChargeOptions{Amount: amount})(nextHandler)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	for k, v := range reqHeaders {
+		req.Header.Set(k, v)
+	}
+	wrapped.ServeHTTP(rec, req)
+	_ = nextCalled
+	return rec.Result()
+}
+
+// readBody reads the full body from an http.Response and returns it as a string.
+func readBody(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	b, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("readBody: %v", err)
+	}
+	return string(b)
+}
+
+// ── CreateTestServer config ───────────────────────────────────────────────────
+
+func TestCreateTestServer_Defaults(t *testing.T) {
+	srv, err := CreateTestServer(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if srv.RecipientAddress == "" {
+		t.Error("RecipientAddress should not be empty")
+	}
+	if srv.Network != NetworkDevnet {
+		t.Errorf("Network = %q, want %q", srv.Network, NetworkDevnet)
+	}
+}
+
+func TestCreateTestServer_CustomRecipientAddress(t *testing.T) {
+	const custom = "CustomRecip111111111111111111111111111111"
+	srv, err := CreateTestServer(&TestServerConfig{RecipientAddress: custom})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if srv.RecipientAddress != custom {
+		t.Errorf("RecipientAddress = %q, want %q", srv.RecipientAddress, custom)
+	}
+}
+
+func TestCreateTestServer_NetworkSetCorrectly(t *testing.T) {
+	srv, err := CreateTestServer(&TestServerConfig{Network: NetworkTestnet})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if srv.Network != NetworkTestnet {
+		t.Errorf("Network = %q, want %q", srv.Network, NetworkTestnet)
+	}
+}
+
+func TestCreateTestServer_AutoGeneratedRecipient(t *testing.T) {
+	srv, err := CreateTestServer(&TestServerConfig{Network: NetworkDevnet})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Auto-generated address should be a non-empty base58 string.
+	if len(srv.RecipientAddress) < 32 {
+		t.Errorf("auto-generated RecipientAddress looks too short: %q", srv.RecipientAddress)
+	}
+}
+
+// ── 402 path ─────────────────────────────────────────────────────────────────
+
+func TestCharge_NoReceiptReturns402(t *testing.T) {
+	srv := buildMppServer(t, nil)
+	resp := serveCharge(t, srv, "0.001", nil)
+	if resp.StatusCode != http.StatusPaymentRequired {
+		t.Errorf("StatusCode = %d, want 402", resp.StatusCode)
+	}
+}
+
+func TestCharge_402HasPaymentRequestHeader(t *testing.T) {
+	srv := buildMppServer(t, nil)
+	resp := serveCharge(t, srv, "0.005", nil)
+
+	header := resp.Header.Get("Payment-Request")
+	if header == "" {
+		t.Fatal("missing Payment-Request header on 402")
+	}
+	if !strings.Contains(header, "solana") {
+		t.Error("Payment-Request should contain 'solana'")
+	}
+	if !strings.Contains(header, `amount="0.005"`) {
+		t.Errorf("Payment-Request should contain amount, got: %s", header)
+	}
+	if !strings.Contains(header, `recipient="`+serverRecipient+`"`) {
+		t.Errorf("Payment-Request should contain recipient, got: %s", header)
+	}
+	if !strings.Contains(header, `network="devnet"`) {
+		t.Errorf("Payment-Request should contain network, got: %s", header)
+	}
+}
+
+func TestCharge_402JSONBodyCorrect(t *testing.T) {
+	srv := buildMppServer(t, nil)
+	resp := serveCharge(t, srv, "0.001", nil)
+
+	body := readBody(t, resp)
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		t.Fatalf("body is not valid JSON: %v\nbody: %s", err, body)
+	}
+
+	if parsed["error"] != "Payment Required" {
+		t.Errorf("error field = %v, want 'Payment Required'", parsed["error"])
+	}
+	payment, ok := parsed["payment"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("payment field missing or wrong type: %v", parsed["payment"])
+	}
+	if payment["amount"] != "0.001" {
+		t.Errorf("payment.amount = %v, want '0.001'", payment["amount"])
+	}
+	if payment["currency"] != "SOL" {
+		t.Errorf("payment.currency = %v, want 'SOL'", payment["currency"])
+	}
+	if payment["recipient"] != serverRecipient {
+		t.Errorf("payment.recipient = %v, want %q", payment["recipient"], serverRecipient)
+	}
+}
+
+// ── 403 paths ─────────────────────────────────────────────────────────────────
+
+func TestCharge_MissingSignatureInReceiptReturns403(t *testing.T) {
+	srv := buildMppServer(t, nil)
+	// Receipt with no signature field.
+	resp := serveCharge(t, srv, "0.001", map[string]string{
+		"payment-receipt": `solana; network="devnet"; amount="0.001"`,
+	})
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("StatusCode = %d, want 403", resp.StatusCode)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "signature") {
+		t.Errorf("body should mention 'signature', got: %s", body)
+	}
+}
+
+func TestCharge_ClaimedAmountLessThanRequiredReturns403(t *testing.T) {
+	srv := buildMppServer(t, nil)
+	resp := serveCharge(t, srv, "0.01", map[string]string{
+		"payment-receipt": `solana; signature="sig"; network="devnet"; amount="0.001"`,
+	})
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("StatusCode = %d, want 403", resp.StatusCode)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "Insufficient") {
+		t.Errorf("body should mention 'Insufficient', got: %s", body)
+	}
+}
+
+func TestCharge_TransactionNotFoundReturns403(t *testing.T) {
+	rpcSrv := makeTxRPCServer(nil) // returns JSON null
+	defer rpcSrv.Close()
+
+	srv := buildMppServer(t, &TestServerConfig{RPCURL: rpcSrv.URL})
+	resp := serveCharge(t, srv, "0.001", map[string]string{
+		"payment-receipt": `solana; signature="bad_sig"; network="devnet"; amount="0.001"`,
+	})
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("StatusCode = %d, want 403", resp.StatusCode)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "not found") {
+		t.Errorf("body should mention 'not found', got: %s", body)
+	}
+}
+
+func TestCharge_TransactionHasErrorReturns403(t *testing.T) {
+	tx := validTx(serverRecipient, 2_000_000, true) // tx with err
+	rpcSrv := makeTxRPCServer(tx)
+	defer rpcSrv.Close()
+
+	srv := buildMppServer(t, &TestServerConfig{RPCURL: rpcSrv.URL})
+	resp := serveCharge(t, srv, "0.001", map[string]string{
+		"payment-receipt": `solana; signature="sig"; network="devnet"; amount="0.001"`,
+	})
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("StatusCode = %d, want 403", resp.StatusCode)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "failed on chain") {
+		t.Errorf("body should mention 'failed on chain', got: %s", body)
+	}
+}
+
+func TestCharge_RecipientNotInTransactionReturns403(t *testing.T) {
+	tx := validTx("WrongRecipient111111111111111111111111111", 2_000_000, false)
+	rpcSrv := makeTxRPCServer(tx)
+	defer rpcSrv.Close()
+
+	srv := buildMppServer(t, &TestServerConfig{RPCURL: rpcSrv.URL})
+	resp := serveCharge(t, srv, "0.001", map[string]string{
+		"payment-receipt": `solana; signature="sig"; network="devnet"; amount="0.001"`,
+	})
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("StatusCode = %d, want 403", resp.StatusCode)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "not found in transaction") {
+		t.Errorf("body should mention 'not found in transaction', got: %s", body)
+	}
+}
+
+func TestCharge_BalanceDeltaBelowRequiredReturns403(t *testing.T) {
+	// Recipient receives only 100_000 lamports (0.0001 SOL), but 0.001 is required.
+	tx := validTx(serverRecipient, 100_000, false)
+	rpcSrv := makeTxRPCServer(tx)
+	defer rpcSrv.Close()
+
+	srv := buildMppServer(t, &TestServerConfig{RPCURL: rpcSrv.URL})
+	resp := serveCharge(t, srv, "0.001", map[string]string{
+		"payment-receipt": `solana; signature="sig"; network="devnet"; amount="0.001"`,
+	})
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("StatusCode = %d, want 403", resp.StatusCode)
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "too small") {
+		t.Errorf("body should mention 'too small', got: %s", body)
+	}
+}
+
+// ── 200 / next() path ─────────────────────────────────────────────────────────
+
+func TestCharge_ExactPaymentCallsNextHandler(t *testing.T) {
+	// 0.001 SOL = 1_000_000 lamports exactly.
+	tx := validTx(serverRecipient, 1_000_000, false)
+	rpcSrv := makeTxRPCServer(tx)
+	defer rpcSrv.Close()
+
+	srv := buildMppServer(t, &TestServerConfig{RPCURL: rpcSrv.URL})
+
+	nextCalled := false
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	wrapped := srv.Charge(ChargeOptions{Amount: "0.001"})(nextHandler)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("payment-receipt", `solana; signature="sig_exact"; network="devnet"; amount="0.001"`)
+	wrapped.ServeHTTP(rec, req)
+
+	if !nextCalled {
+		t.Error("next handler was not called for valid exact payment")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestCharge_OverpaymentCallsNextHandler(t *testing.T) {
+	// 0.005 SOL received but only 0.001 required.
+	tx := validTx(serverRecipient, 5_000_000, false)
+	rpcSrv := makeTxRPCServer(tx)
+	defer rpcSrv.Close()
+
+	srv := buildMppServer(t, &TestServerConfig{RPCURL: rpcSrv.URL})
+
+	nextCalled := false
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	wrapped := srv.Charge(ChargeOptions{Amount: "0.001"})(nextHandler)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("payment-receipt", `solana; signature="sig_over"; network="devnet"; amount="0.005"`)
+	wrapped.ServeHTTP(rec, req)
+
+	if !nextCalled {
+		t.Error("next handler was not called for overpayment")
+	}
+}
+
+func TestCharge_CustomRecipientUsedInHeader(t *testing.T) {
+	const custom = "CustomWallet111111111111111111111111111111"
+	srv, _ := CreateTestServer(&TestServerConfig{
+		Network:          NetworkDevnet,
+		RecipientAddress: custom,
+	})
+
+	resp := serveCharge(t, srv, "0.001", nil)
+	header := resp.Header.Get("Payment-Request")
+	if !strings.Contains(header, `recipient="`+custom+`"`) {
+		t.Errorf("Payment-Request header should contain custom recipient, got: %s", header)
+	}
+}
+
+func TestCharge_Headers402Preserved(t *testing.T) {
+	srv := buildMppServer(t, nil)
+	resp := serveCharge(t, srv, "0.001", nil)
+
+	// Content-Type should be JSON on 402.
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	// Payment-Request header must be present.
+	if resp.Header.Get("Payment-Request") == "" {
+		t.Error("Payment-Request header missing on 402 response")
+	}
+}
+
+// ── verifyPayment helper ──────────────────────────────────────────────────────
+
+func TestVerifyPayment_ValidTransaction(t *testing.T) {
+	tx := validTx(serverRecipient, 1_000_000, false)
+	rpcSrv := makeTxRPCServer(tx)
+	defer rpcSrv.Close()
+
+	ok, reason := verifyPayment(
+		context.Background(),
+		rpcSrv.URL,
+		`solana; signature="valid_sig"; network="devnet"; amount="0.001"`,
+		serverRecipient,
+		0.001,
+	)
+	if !ok {
+		t.Errorf("expected ok=true, got false with reason: %s", reason)
+	}
+}
+
+func TestVerifyPayment_NullTransactionNotFound(t *testing.T) {
+	rpcSrv := makeTxRPCServer(nil)
+	defer rpcSrv.Close()
+
+	ok, reason := verifyPayment(
+		context.Background(),
+		rpcSrv.URL,
+		`solana; signature="missing"; network="devnet"; amount="0.001"`,
+		serverRecipient,
+		0.001,
+	)
+	if ok {
+		t.Error("expected ok=false for null transaction")
+	}
+	if !strings.Contains(reason, "not found") {
+		t.Errorf("reason should mention 'not found', got: %s", reason)
+	}
+}
