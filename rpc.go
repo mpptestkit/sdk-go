@@ -121,21 +121,21 @@ var systemProgramID = [32]byte{}
 //
 // Solana legacy transaction wire format:
 //
-//	compact-u16(1)          — number of signatures (always 1 for this tx)
-//	[64]byte                — ed25519 signature over the message
+//	compact-u16(1)          -number of signatures (always 1 for this tx)
+//	[64]byte                -ed25519 signature over the message
 //	Message:
-//	  [3]byte               — header: (num_required_sigs=1, num_ro_signed=0, num_ro_unsigned=1)
-//	  compact-u16(3)        — number of account keys
-//	  [32*3]byte            — account keys: [from, to, system_program]
-//	  [32]byte              — recent blockhash
-//	  compact-u16(1)        — number of instructions
+//	  [3]byte               -header: (num_required_sigs=1, num_ro_signed=0, num_ro_unsigned=1)
+//	  compact-u16(3)        -number of account keys
+//	  [32*3]byte            -account keys: [from, to, system_program]
+//	  [32]byte              -recent blockhash
+//	  compact-u16(1)        -number of instructions
 //	  Instruction:
-//	    u8(2)               — program_id_index (system program is index 2)
-//	    compact-u16(2)      — num account indices
-//	    [u8, u8]            — account indices [0=from, 1=to]
-//	    compact-u16(12)     — instruction data length
-//	    [4]byte LE          — SystemInstruction::Transfer = 2
-//	    [8]byte LE          — lamports (u64 little-endian)
+//	    u8(2)               -program_id_index (system program is index 2)
+//	    compact-u16(2)      -num account indices
+//	    [u8, u8]            -account indices [0=from, 1=to]
+//	    compact-u16(12)     -instruction data length
+//	    [4]byte LE          -SystemInstruction::Transfer = 2
+//	    [8]byte LE          -lamports (u64 little-endian)
 func buildTransferTransaction(
 	fromPrivKey ed25519.PrivateKey,
 	fromPubKey []byte,
