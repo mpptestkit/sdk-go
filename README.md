@@ -2,7 +2,7 @@
 
 A production-ready Go SDK for the **Machine Payments Protocol (MPP)** on Solana.
 
-Implements the full HTTP 402 payment flow in pure Go — no external Solana libraries required. Uses only the standard library (`crypto/ed25519`, `net/http`, `encoding/json`, etc.) and talks to Solana via raw JSON-RPC.
+Implements the full HTTP 402 payment flow in pure Go -no external Solana libraries required. Uses only the standard library (`crypto/ed25519`, `net/http`, `encoding/json`, etc.) and talks to Solana via raw JSON-RPC.
 
 ## Installation
 
@@ -17,7 +17,7 @@ go get github.com/mpptestkit/mpp-test-sdk-go
 ```go
 import mpp "github.com/mpptestkit/mpp-test-sdk-go"
 
-// Zero config — auto-generates a Solana wallet and airdrops 2 SOL on devnet.
+// Zero config -auto-generates a Solana wallet and airdrops 2 SOL on devnet.
 client, err := mpp.CreateTestClient(ctx, nil)
 if err != nil {
     log.Fatal(err)
@@ -84,8 +84,8 @@ http.ListenAndServe(":3001", mux)
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `Network` | `SolanaNetwork` | `"devnet"` | Solana cluster |
-| `SecretKey` | `[]byte` | — | 32-byte seed or 64-byte private key. Auto-generated on devnet/testnet. **Required on mainnet.** |
-| `OnStep` | `func(PaymentStep)` | — | Lifecycle event callback |
+| `SecretKey` | `[]byte` | -| 32-byte seed or 64-byte private key. Auto-generated on devnet/testnet. **Required on mainnet.** |
+| `OnStep` | `func(PaymentStep)` | -| Lifecycle event callback |
 | `Timeout` | `time.Duration` | 30s | Full flow timeout |
 | `RPCURL` | `string` | cluster default | Override Solana RPC endpoint |
 
@@ -94,7 +94,7 @@ http.ListenAndServe(":3001", mux)
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `Network` | `SolanaNetwork` | `"devnet"` | Solana cluster |
-| `SecretKey` | `[]byte` | — | Server keypair (auto-generated if omitted) |
+| `SecretKey` | `[]byte` | -| Server keypair (auto-generated if omitted) |
 | `RecipientAddress` | `string` | server keypair pubkey | Override payment recipient |
 | `RPCURL` | `string` | cluster default | Override Solana RPC endpoint |
 
@@ -104,7 +104,7 @@ http.ListenAndServe(":3001", mux)
 |----------|-------|---------|
 | `mpp.NetworkDevnet` | `"devnet"` | Yes (2 SOL) |
 | `mpp.NetworkTestnet` | `"testnet"` | Yes (2 SOL) |
-| `mpp.NetworkMainnet` | `"mainnet"` | No — pre-funded `SecretKey` required |
+| `mpp.NetworkMainnet` | `"mainnet"` | No -pre-funded `SecretKey` required |
 
 ## Error types
 
@@ -137,16 +137,15 @@ Events: `wallet-created`, `funded`, `request`, `payment`, `retry`, `success`, `e
 
 ## Implementation notes
 
-- **No external dependencies** — pure Go standard library only.
+- **No external dependencies** -pure Go standard library only.
 - **Solana transactions** built from scratch: compact-u16 encoding, ed25519 signing, legacy transaction wire format.
 - **Base58** implemented without `math/big` dependencies (uses `math/big` from stdlib).
-- **Airdrop retry** — 3 attempts with exponential back-off (1s, 2s, 4s).
-- **Confirmation polling** — polls `getSignatureStatuses` up to 60 seconds.
+- **Airdrop retry** -3 attempts with exponential back-off (1s, 2s, 4s).
+- **Confirmation polling** -polls `getSignatureStatuses` up to 60 seconds.
 
 ## Running tests
 
 ```bash
-cd packages/sdk-go
 go test ./... -v
 ```
 
