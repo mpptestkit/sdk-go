@@ -149,7 +149,7 @@ func TestCreateTestClient_WithSecretKeyNoAirdropOnMainnet(t *testing.T) {
 	client, err := CreateTestClient(ctx, &TestClientConfig{
 		Network:   NetworkMainnet,
 		SecretKey: seed,
-		RPCURL:    "http://127.0.0.1:1", // unreachable — should not be called
+		RPCURL:    "http://127.0.0.1:1", // unreachable -should not be called
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -238,7 +238,7 @@ func TestCreateTestClient_TestnetAirdrops(t *testing.T) {
 	}
 }
 
-// ── client.Fetch — free endpoint ─────────────────────────────────────────────
+// ── client.Fetch -free endpoint ─────────────────────────────────────────────
 
 func TestFetch_FreeEndpoint200(t *testing.T) {
 	rpcSrv, _ := newTestRPCServer(defaultRPCConfig())
@@ -297,7 +297,7 @@ func TestFetch_NonOKStatusReturnsMppPaymentError(t *testing.T) {
 	}
 }
 
-// ── client.Fetch — 402 payment flow ──────────────────────────────────────────
+// ── client.Fetch -402 payment flow ──────────────────────────────────────────
 
 const testPaymentRequestHeader = `solana; amount="0.001"; recipient="9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"; network="devnet"`
 

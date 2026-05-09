@@ -75,7 +75,7 @@ type TestClientConfig struct {
 	// Network selects the Solana cluster. Defaults to NetworkDevnet.
 	Network SolanaNetwork
 	// SecretKey is a 64-byte ed25519 private key or a 32-byte seed.
-	// On devnet/testnet it is optional — the wallet is auto-funded via airdrop.
+	// On devnet/testnet it is optional -the wallet is auto-funded via airdrop.
 	// On mainnet it is required.
 	SecretKey []byte
 	// OnStep is an optional callback that receives lifecycle events.
@@ -450,7 +450,7 @@ func CreateTestClient(ctx context.Context, config *TestClientConfig) (*TestClien
 		rpcURL = networkRPC[network]
 	}
 
-	// Mainnet requires a pre-funded wallet — no airdrop available.
+	// Mainnet requires a pre-funded wallet -no airdrop available.
 	if network == NetworkMainnet && len(config.SecretKey) == 0 {
 		return nil, newMppNetworkError(
 			string(network),
